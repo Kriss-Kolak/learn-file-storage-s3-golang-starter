@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,10 +45,12 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	file, fileHeader, err := r.FormFile("thumbnail")
+
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't form file", err)
 		return
 	}
+	defer file.Close()
 	mediaType := fileHeader.Header.Get("Content-Type")
 	metadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -58,11 +63,29 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	extension := strings.ReplaceAll(mediaType, "image/", "")
-	
+	parsedType, _, err := mime.ParseMediaType(mediaType)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't parse media type", err)
+	}
 
-	fileName := fmt.Sprintf("%s.%s", metadata.ID.String(), extension)
-	thumbnailFilePath := filepath.Join(cfg.assetsRoot, fileName)
+	ext := strings.ToLower(filepath.Ext(fileHeader.Filename))
+
+	if parsedType != "image/jpeg" && parsedType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Media type is not correct", nil)
+		return
+	}
+
+	randomBytes := make([]byte, 32)
+
+	_, err = rand.Read(randomBytes)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create new bytes", err)
+		return
+	}
+
+	fileName := base64.RawURLEncoding.EncodeToString(randomBytes)
+	fullFileName := fmt.Sprintf("%s%s", fileName, ext)
+	thumbnailFilePath := filepath.Join(cfg.assetsRoot, fullFileName)
 	systemFile, err := os.Create(thumbnailFilePath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't create system file", err)
@@ -74,7 +97,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, metadata.ID.String(), extension)
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s%s", cfg.port, fileName, ext)
 	metadata.ThumbnailURL = &thumbnailURL
 	err = cfg.db.UpdateVideo(metadata)
 	if err != nil {
